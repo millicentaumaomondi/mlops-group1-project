@@ -149,6 +149,7 @@ async def face_recognition(file: UploadFile = File(...), token: str = Depends(oa
         # Perform classification on the cropped face
         with torch.no_grad():
             output = model(face_tensor)
+            torch.max(output).item()
             predicted_class = torch.argmax(output, dim=1).item()
 
         # Get the name from the mapping
