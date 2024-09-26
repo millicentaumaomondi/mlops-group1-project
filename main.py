@@ -188,6 +188,7 @@ async def face_recognition(door_number, file: UploadFile = File(...), token: str
             confidence, _ = torch.max(output, dim=1)
             confidence = confidence.item()
             mlflow.log_metric("confidence", confidence)
+            mlflow.log_param('predicted_class', predicted_class)
             # mlflow.log_param("predicted_class", class_mapping.get(predicted_class, "Unknown"))
 
         if confidence < 0.95:
@@ -206,8 +207,13 @@ async def face_recognition(door_number, file: UploadFile = File(...), token: str
     execution_time = time.time() - start_time
     mlflow.log_metric("execution_time", execution_time)
 
+    if int(door_number) == predicted_class:
+        action = 'Flow to open door initialized'
+    else:
+        action = 'Access denied. Please try again or contact security.'
+    mlflow.log_param('Action', action)
     mlflow.end_run()
-    return 'Flow to open door initialized' if door_number == predicted_class else 'Access denied.'
+    return action
 #     return StreamingResponse(
 #     img_byte_arr,
 #     media_type="image/jpeg",
