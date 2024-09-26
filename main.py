@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, status
+from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, status,Header
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse
 from datetime import datetime, timedelta, timezone
@@ -13,7 +13,11 @@ import torch
 import timm
 import torchvision.transforms as transforms
 from PIL import ImageFont, ImageDraw, Image
-
+from torchvision import transforms
+from evidently.report import Report
+from evidently.metric_preset import DataDriftPreset
+import pandas as pd
+from fastapi.responses import FileResponse
 
 # JWT settings
 SECRET_KEY = "fdb3e44ba75f4d770ee8de98e488bc3ebcf64dc3066c8140a1ae620c30964454"  # Replace with your own secret key
@@ -112,57 +116,65 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-# Face Recognition Endpoint
-@app.post("/predict/")
-async def face_recognition(file: UploadFile = File(...), token: str = Depends(oauth2_scheme)):
-    # Decode the token to verify user identity
-    username = decode_token(token)
-
+@app.post("/predict/{door_number}")
+async def face_recognition(door_number, file: UploadFile = File(...), token: str = Depends(oauth2_scheme)):
     # Load the image
     image = Image.open(file.file).convert("RGB")
-    
-    # Detect faces using YOLOv8
+    to_tensor = transforms.ToTensor()
+    image_tensor = to_tensor(image)
+
     results = face_model(image)
 
-    # YOLOv8 results return a list, so we need to access it correctly
     if not results or len(results[0].boxes) == 0:
         raise HTTPException(status_code=400, detail="No faces detected in the image.")
 
-    # Try loading a custom font with a fallback to the default font
     try:
         font_path = "/Library/Fonts/Arial.ttf"  # Update this path according to your system
         font = ImageFont.truetype(font_path, size=24)
     except IOError:
-        font = ImageFont.load_default()  # Fallback to the default font if custom font not found
+        font = ImageFont.load_default()  
 
     # Process only if faces are detected
     draw = ImageDraw.Draw(image)
     for box in results[0].boxes:
-        x1, y1, x2, y2 = map(int, box.xyxy[0])  # Extract bounding box coordinates
+        x1, y1, x2, y2 = map(int, box.xyxy[0])  
         
         # Crop the detected face from the image
         face_image = image.crop((x1, y1, x2, y2))
-
-        # Apply transformations to the cropped face image
         face_tensor = transform(face_image).unsqueeze(0).to(device)
 
-        # Perform classification on the cropped face
         with torch.no_grad():
+            # Get the raw model output (logits)
             output = model(face_tensor)
-            torch.max(output).item()
+            
+            output = torch.exp(output - torch.max(output))  
+            output = output / output.sum(dim=1, keepdim=True) 
             predicted_class = torch.argmax(output, dim=1).item()
 
-        # Get the name from the mapping
-        predicted_name = class_mapping.get(predicted_class, "Unknown Class")
+            confidence, _ = torch.max(output, dim=1)
+            confidence = confidence.item()  
+
+
+        if confidence <0.95:
+            predicted_name = "Uknown Face"
+        else:
+            predicted_name = class_mapping.get(predicted_class)
         
         # Draw bounding box and label on the original image
         draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
         draw.text((x1, y1), predicted_name, fill="white", font=font)
 
-    # Convert the modified image (with bounding boxes and labels) to a byte stream
     img_byte_arr = io.BytesIO()
     image.save(img_byte_arr, format='JPEG')
-    img_byte_arr.seek(0)  # Reset the stream
+    img_byte_arr.seek(0)  
 
-    # Return the image as a response
-    return StreamingResponse(img_byte_arr, media_type="image/jpeg")
+    return StreamingResponse(
+    img_byte_arr, 
+    media_type="image/jpeg", 
+    headers={
+        "Predicted-Door-Num": str(predicted_class),  
+        "X-Confidence": str(confidence)  
+    }
+)
+
+
