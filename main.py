@@ -12,9 +12,11 @@ from PIL import ImageFont, ImageDraw, Image
 from evidently.report import Report
 from evidently.metric_preset import DataDriftPreset
 
+import dagshub
 import jwt
 import io
 import mlflow
+import os
 import torch
 import time
 import timm
@@ -27,6 +29,10 @@ import pandas as pd
 SECRET_KEY = "fdb3e44ba75f4d770ee8de98e488bc3ebcf64dc3066c8140a1ae620c30964454"  # Replace with your own secret key
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+os.environ['MLFLOW_TRACKING_USERNAME'] = 'ignatiusboadi'
+os.environ['MLFLOW_TRACKING_PASSWORD'] = '67ea7e8b48b9a51dd1748b8bb71906cc5806eb09'
+os.environ['MLFLOW_TRACKING_URI'] = 'https://dagshub.com/ignatiusboadi/mlops-tasks.mlflow'
 
 # Password hashing context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -69,8 +75,10 @@ app = FastAPI()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 
-# Helper functions
+dagshub.init(repo_owner='ignatiusboadi', repo_name='mlops-tasks', mlflow=True)
 
+
+# Helper functions
 def start_or_get_run():
     if mlflow.active_run() is None:
         mlflow.start_run()
@@ -116,6 +124,7 @@ def decode_token(token: str):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 
+mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
 mlflow.set_experiment("Celebrity-face-recognition")
 
 
@@ -138,10 +147,15 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
 @app.post("/predict/{door_number}")
 async def face_recognition(door_number, file: UploadFile = File(...), token: str = Depends(oauth2_scheme)):
+    end_active_run()
+    start_or_get_run()
     # Load the image
     image = Image.open(file.file).convert("RGB")
     to_tensor = transforms.ToTensor()
     image_tensor = to_tensor(image)
+    mlflow.log_param("image_size", image.size)
+
+    start_time = time.time()
 
     results = face_model(image)
 
@@ -170,31 +184,37 @@ async def face_recognition(door_number, file: UploadFile = File(...), token: str
             output = torch.exp(output - torch.max(output))  
             output = output / output.sum(dim=1, keepdim=True) 
             predicted_class = torch.argmax(output, dim=1).item()
-
+            mlflow.log_param('model_output', class_mapping.get(predicted_class))
             confidence, _ = torch.max(output, dim=1)
-            confidence = confidence.item()  
+            confidence = confidence.item()
+            mlflow.log_metric("confidence", confidence)
+            # mlflow.log_param("predicted_class", class_mapping.get(predicted_class, "Unknown"))
 
-
-        if confidence <0.95:
-            predicted_name = "Uknown Face"
+        if confidence < 0.95:
+            predicted_name = "Unknown Face"
         else:
             predicted_name = class_mapping.get(predicted_class)
-        
+        mlflow.log_param('door number', door_number)
+        mlflow.log_param('predicted_name', predicted_name)
         # Draw bounding box and label on the original image
         draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
         draw.text((x1, y1), predicted_name, fill="white", font=font)
 
     img_byte_arr = io.BytesIO()
     image.save(img_byte_arr, format='JPEG')
-    img_byte_arr.seek(0)  
+    img_byte_arr.seek(0)
+    execution_time = time.time() - start_time
+    mlflow.log_metric("execution_time", execution_time)
 
-    return StreamingResponse(
-    img_byte_arr, 
-    media_type="image/jpeg", 
-    headers={
-        "Predicted-Door-Num": str(predicted_class),  
-        "X-Confidence": str(confidence)  
-    }
-)
+    mlflow.end_run()
+    return 'Flow to open door initialized' if door_number == predicted_class else 'Access denied.'
+#     return StreamingResponse(
+#     img_byte_arr,
+#     media_type="image/jpeg",
+#     headers={
+#         "Predicted-Door-Num": str(predicted_class),
+#         "X-Confidence": str(confidence)
+#     }
+# )
 
 
