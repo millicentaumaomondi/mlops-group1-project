@@ -3,21 +3,25 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse
 from datetime import datetime, timedelta, timezone
 from typing import Union
-import jwt
 from jwt import PyJWTError
 from passlib.context import CryptContext
 from huggingface_hub import hf_hub_download
 from ultralytics import YOLO
-import io
-import torch
-import timm
-import torchvision.transforms as transforms
+from fastapi.responses import FileResponse
 from PIL import ImageFont, ImageDraw, Image
-from torchvision import transforms
 from evidently.report import Report
 from evidently.metric_preset import DataDriftPreset
+
+import jwt
+import io
+import mlflow
+import torch
+import time
+import timm
+import torchvision.transforms as transforms
+
 import pandas as pd
-from fastapi.responses import FileResponse
+
 
 # JWT settings
 SECRET_KEY = "fdb3e44ba75f4d770ee8de98e488bc3ebcf64dc3066c8140a1ae620c30964454"  # Replace with your own secret key
@@ -66,6 +70,19 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 
 # Helper functions
+
+def start_or_get_run():
+    if mlflow.active_run() is None:
+        mlflow.start_run()
+    else:
+        print(f"Active run with UUID {mlflow.active_run().info.run_id} already exists")
+
+
+def end_active_run():
+    if mlflow.active_run() is not None:
+        mlflow.end_run()
+
+
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
@@ -97,6 +114,9 @@ def decode_token(token: str):
         return username
     except PyJWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+
+mlflow.set_experiment("Celebrity-face-recognition")
 
 
 # Token Generation Endpoint
